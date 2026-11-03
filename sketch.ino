@@ -1,68 +1,90 @@
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
-// Credenciais da rede simulada do Wokwi
-const char* ssid = "Wokwi-GUEST";
-const char* password = "";
+// 1. ATUALIZE COM O SEU WI-FI REAL (Obrigatório ser rede 2.4 GHz)
+const char* ssid = "Vini";
+const char* password = "naotemsenha";
 
 // Configurações da agua-api
-const char* serverName = "https://webhook.site/a6882307-e44e-4503-98cb-f3e17c6b2e6e"; // Atualize com sua URL do Ngrok
+const char* serverName = "http://192.168.18.10:8000/telemetry"; // Atualize com sua URL do Ngrok
 const String deviceId = "esp32-caixa-01"; 
 const String deviceHash = "hash-legal";
 
-// Pinos do sensor conectados no simulador
-const int trigPin = 5;
-const int echoPin = 18;
+// Pinos físicos no ESP32-WROOM-32 conectados ao JSN-SR04T V3.3
+const int trigPin = 5;  // Ligue no pino RX (Trig) do JSN-SR04T
+const int echoPin = 18; // Ligue no pino TX (Echo) do JSN-SR04T
 
 void setup() {
   Serial.begin(115200);
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+  delay(1000);
 
+  pinMode(trigPin, OUTPUT);
+  // INPUT_PULLUP estabiliza o sinal de retorno em 3.3V no JSN-SR04T V3.3
+  pinMode(echoPin, INPUT_PULLUP); 
+
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  Serial.print("Conectando ao WiFi...");
-  while(WiFi.status() != WL_CONNECTED) {
+  Serial.print("Conectando ao WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
   Serial.println("\nConectado ao WiFi!");
+  Serial.print("IP do ESP32: ");
+  Serial.println(WiFi.localIP());
 }
 
 void loop() {
-  // 1. Aciona o sensor ultrassônico
+  // 1. Aciona o sensor JSN-SR04T (pulso de 20us para transdutor à prova d'água)
   digitalWrite(trigPin, LOW);
-  delayMicroseconds(2);
+  delayMicroseconds(5);
   digitalWrite(trigPin, HIGH);
-  delayMicroseconds(10);
+  delayMicroseconds(20);
   digitalWrite(trigPin, LOW);
 
-  // 2. Calcula a distância física da lâmina d'água
-  long duration = pulseIn(echoPin, HIGH);
-  float distance_cm = duration * 0.034 / 2;
+  // 2. Lê o tempo de retorno com timeout de 38ms (~6.5m) para não travar o ESP32
+  long duration = pulseIn(echoPin, HIGH, 38000);
+  float distance_cm = (duration * 0.0343) / 2.0;
 
-  Serial.print("Distância: ");
-  Serial.print(distance_cm);
-  Serial.println(" cm");
+  // Diagnóstico no Monitor Serial
+  if (duration == 0) {
+    Serial.println("Aviso: Sem leitura de eco (verifique fios RX/TX ou se o sensor está a mais de 25cm do alvo).");
+  } else {
+    Serial.print("Distância: ");
+    Serial.print(distance_cm, 2);
+    Serial.println(" cm");
+  }
 
-  // 3. Envia os dados consolidados para a agua-api
-  if(WiFi.status() == WL_CONNECTED){
+  // 3. Envia os dados consolidados para a agua-api via HTTPS
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClientSecure client;
+    client.setInsecure(); // Necessário no ESP32 físico para HTTPS (Webhook.site / Ngrok) sem certificado
+
     HTTPClient http;
-    http.begin(serverName);
-    
-    // Cabeçalhos de segurança exigidos pela arquitetura
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("device-id", deviceId);
-    http.addHeader("hash", deviceHash);
-    
-    // Payload JSON com o dado bruto
-    String payload = "{\"distance_cm\": " + String(distance_cm) + "}";
-    int httpResponseCode = http.POST(payload);
-    
-    Serial.print("HTTP Response: ");
-    Serial.println(httpResponseCode);
-    http.end();
+    if (http.begin(client, serverName)) {
+      // Cabeçalhos de segurança exigidos pela arquitetura
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("device-id", deviceId);
+      http.addHeader("hash", deviceHash);
+      
+      // Payload JSON com o dado bruto (2 casas decimais)
+      String payload = "{\"distance_cm\": " + String(distance_cm, 2) + "}";
+      int httpResponseCode = http.POST(payload);
+      
+      Serial.print("HTTP Response: ");
+      Serial.println(httpResponseCode);
+      if (httpResponseCode < 0) {
+        Serial.print("Erro HTTP: ");
+        Serial.println(http.errorToString(httpResponseCode));
+      }
+      http.end();
+    }
+  } else {
+    Serial.println("WiFi desconectado! Tentando reconectar...");
+    WiFi.reconnect();
   }
   
-  // Pausa de 10 segundos para visualização no simulador
+  // Pausa de 10 segundos entre os envios
   delay(10000); 
 }
