@@ -7,7 +7,7 @@ const char* ssid = "Vini";
 const char* password = "";
 
 // Configurações da agua-api
-const char* serverName = "http://10.222.90.56:8000/telemetry"; // Atualize com sua URL do Ngrok ou IP local
+const char* serverName = "http://10.103.22.193:8000/telemetry"; // Atualize com sua URL do Ngrok
 const String deviceId = "esp32-caixa-01"; 
 const String deviceHash = "hash-legal";
 
@@ -56,22 +56,17 @@ void loop() {
     Serial.println(" cm");
   }
 
-  // 3. Envia os dados consolidados para a agua-api (suporta HTTP local e HTTPS)
+  // 3. Envia os dados consolidados para a agua-api (HTTP ou HTTPS conforme a URL)
   if (WiFi.status() == WL_CONNECTED) {
+    String url = serverName;
+    WiFiClient plainClient;          // TCP puro (http://)
+    WiFiClientSecure secureClient;   // TLS (https://)
+    secureClient.setInsecure();      // HTTPS sem validar certificado (Ngrok / Webhook.site)
+
     HTTPClient http;
-    WiFiClient client;
-    WiFiClientSecure clientSecure;
-    bool beginSuccess = false;
-
-    String url = String(serverName);
-    if (url.startsWith("https://")) {
-      clientSecure.setInsecure(); // Necessário no ESP32 físico para HTTPS (Webhook.site / Ngrok) sem certificado
-      beginSuccess = http.begin(clientSecure, serverName);
-    } else {
-      beginSuccess = http.begin(client, serverName);
-    }
-
-    if (beginSuccess) {
+    bool started = url.startsWith("https://") ? http.begin(secureClient, url)
+                                              : http.begin(plainClient, url);
+    if (started) {
       // Cabeçalhos de segurança exigidos pela arquitetura
       http.addHeader("Content-Type", "application/json");
       http.addHeader("device-id", deviceId);
@@ -88,8 +83,6 @@ void loop() {
         Serial.println(http.errorToString(httpResponseCode));
       }
       http.end();
-    } else {
-      Serial.println("Erro: Não foi possível iniciar a conexão HTTP/HTTPS com o servidor.");
     }
   } else {
     Serial.println("WiFi desconectado! Tentando reconectar...");
